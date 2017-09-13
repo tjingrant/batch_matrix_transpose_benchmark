@@ -254,22 +254,23 @@ __global__ void SwapDimension1And2InTensor3UsingTiles(const T* input,
   }
 }
 
-#define THREAD_NUM 1024
-#define TILE_SIZE_I 512
-#define TILE_SIZE_J 8
+// #define THREAD_NUM 512
+// #define TILE_SIZE_I 3
+// #define TILE_SIZE_J 512
 #define PADDING 1
 
 // No bank-conflict transpose
 // Same as transposeCoalesced except the first tile dimension is padded
 // to avoid shared memory bank conflicts.
-  #define T float
-  #define READ_ROW_PER_PASS (THREAD_NUM/TILE_SIZE_J)
-  #define WRITE_ROW_PER_PASS (THREAD_NUM/TILE_SIZE_I)
+// #define T float
 
+template <typename T, int THREAD_NUM, int TILE_SIZE_I, int TILE_SIZE_J>
 __global__ void MySwapDimension1And2InTensor3UsingTiles(const T* __restrict__ input,
                                         Dimension<3> input_dims,
                                         T* __restrict__ output) {
 
+  #define READ_ROW_PER_PASS  (THREAD_NUM/TILE_SIZE_J)
+  #define WRITE_ROW_PER_PASS (THREAD_NUM/TILE_SIZE_I)
   // One extra line in the inner dimension to avoid share memory bank conflict.
   __shared__ T shared_memory_tile[TILE_SIZE_I][TILE_SIZE_J+PADDING];
 
@@ -306,8 +307,6 @@ __global__ void MySwapDimension1And2InTensor3UsingTiles(const T* __restrict__ in
   int tj = x%TILE_SIZE_J;
 
   for (int i_loc = ti; i_loc < (TILE_SIZE_I); i_loc += READ_ROW_PER_PASS) {
-    //if (threadIdx.y > 16)
-    //  printf("%d, %d\n", threadIdx.y, j);
     SHARED(i_loc, tj) = INPUT(i_loc, tj);
   }
 
@@ -326,16 +325,21 @@ __global__ void MySwapDimension1And2InTensor3UsingTiles(const T* __restrict__ in
       TensorIndexToFlat(output_tile_origin, output_dims);
 
   // Oriented with respect to the output array.
-  ti = x/TILE_SIZE_I;
-  tj = x%TILE_SIZE_I;
+  int effective_thread_num = THREAD_NUM / TILE_SIZE_I * THREAD_NUM;
 
-  #define OUTPUT(i, j)\
-      output[output_origin_flat_index +\
-        (i) * output_dims[2] + (j)]
+  if (x < effective_thread_num) {
+    ti = x/TILE_SIZE_I;
+    tj = x%TILE_SIZE_I;
 
-  for (int i_loc = ti; i_loc < (TILE_SIZE_J); i_loc += WRITE_ROW_PER_PASS) {
-    OUTPUT(i_loc, tj) = SHARED(tj, i_loc);
+    #define OUTPUT(i, j)\
+        output[output_origin_flat_index +\
+          (i) * output_dims[2] + (j)]
+
+    for (int i_loc = ti; i_loc < (TILE_SIZE_J); i_loc += WRITE_ROW_PER_PASS) {
+      OUTPUT(i_loc, tj) = SHARED(tj, i_loc);
+    }
   }
+
 }
 #undef T
 
@@ -361,31 +365,23 @@ void RunSwapDimension1And2InTensor3(const T* input,
   int total_tiles_count = input_dims_in_tiles[0] * input_dims_in_tiles[1] *
                             input_dims_in_tiles[2];
 
-  // int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
-  //                           my_input_dims_in_tiles[2];
-
   if (use_tiles) {
     // We get best performance when TileSize is the number of threads in a warp
     // (32 on our GPUs) and NumSubTiles is 8, so our block size is 8 * 32 = 256
     // threads.
-    std::cout << "Swapping using tiles. "  << input_dims_in_tiles[0] << "," <<
-                                                         input_dims_in_tiles[1] << "," <<
-                                                         input_dims_in_tiles[2] << std::endl;
+    // std::cout << "Swapping using tiles. "  << input_dims_in_tiles[0] << "," <<
+                                                         // input_dims_in_tiles[1] << "," <<
+                                                         // input_dims_in_tiles[2] << std::endl;
     dim3 griddim(total_tiles_count, 1, 1);
     dim3 blockdim(TileSize, NumSubTiles, 1);
     SwapDimension1And2InTensor3UsingTiles<T, TileSize, NumSubTiles><<<griddim, blockdim>>>(input, input_dims, output);
-    // dim3 _blockdim(TILE_SIZE_I* TILE_SIZE_J, 1, 1);
-    // MySwapDimension1And2InTensor3UsingTiles<<<
-    //    griddim, THREAD_NUM>>>(input, input_dims, my_output);
   } else {
-    std::cout << "Swapping using simple method." << std::endl;
+    // std::cout << "Swapping using simple method." << std::endl;
     int total_element_count = input_dims[0] * input_dims[1] * input_dims[2];
     CudaLaunchConfig config = GetCudaLaunchConfig(total_element_count);
     SwapDimension1And2InTensor3Simple<T>
         <<<config.block_count, config.thread_per_block>>>(
             config.virtual_thread_count, input, input_dims, output);
-    // MySwapDimension1And2InTensor3UsingTiles<<<
-    //     my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
   }
 }
 
@@ -403,16 +399,44 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
   bool use_tiles = (input_dims[1] >= kMinDimensionToUseTiles &&
                     input_dims[2] >= kMinDimensionToUseTiles);
 
-  Dimension<3> my_input_dims_in_tiles = {
-        input_dims[0], (input_dims[1] + TILE_SIZE_I - 1) / TILE_SIZE_I,
-        (input_dims[2] + TILE_SIZE_J - 1) / TILE_SIZE_J,
-  };
+  if (use_tiles) {
+    Dimension<3> my_input_dims_in_tiles = {
+          input_dims[0], (input_dims[1] + 32 - 1) / 32,
+          (input_dims[2] + 32 - 1) / 32,
+    };
 
-  int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
-                            my_input_dims_in_tiles[2];
+    int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
+                              my_input_dims_in_tiles[2];
+    int THREAD_NUM = 32;
+    MySwapDimension1And2InTensor3UsingTiles<float, 256, 32, 32><<<
+          my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+  } else {
+    int TILE_SIZE_I = 0; int TILE_SIZE_J = 0;
+    bool i_big = input_dims[1] >= kMinDimensionToUseTiles;
 
-  MySwapDimension1And2InTensor3UsingTiles<<<
-        my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+    if (i_big) {
+      TILE_SIZE_I = 512;
+      TILE_SIZE_J = input_dims[2];
+    } else {
+      TILE_SIZE_I = input_dims[1];
+      TILE_SIZE_J = 512;
+    }
+    int THREAD_NUM = 512;
+    Dimension<3> my_input_dims_in_tiles = {
+          input_dims[0], (input_dims[1] + TILE_SIZE_I - 1) / TILE_SIZE_I,
+          (input_dims[2] + TILE_SIZE_J - 1) / TILE_SIZE_J,
+    };
+
+    int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
+                              my_input_dims_in_tiles[2];
+
+    if (TILE_SIZE_I==512 && TILE_SIZE_J==5)
+      MySwapDimension1And2InTensor3UsingTiles<float, 512, 512, 5><<<
+            my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+    if (TILE_SIZE_I==5 && TILE_SIZE_J==512)
+      MySwapDimension1And2InTensor3UsingTiles<float, 512, 5, 512><<<
+            my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+  }
 }
 
 //Macro for checking cuda errors following a cuda launch or api call
@@ -424,12 +448,9 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
  } else { printf("Cuda launch success\n"); }\
 }
 
-int main()
+int test(int N, int M, int P)
 {
-#define N 128
-#define M 512
-#define P 32
-
+  printf("TEST PARAM %d, %d, %d\n", N, M, P);
   float *input_host, *output_host, *my_output_host;
   int size = N*M*P*sizeof(float);
 
@@ -449,8 +470,24 @@ int main()
   cudaMalloc((void**)&output_device, size);
   cudaMalloc((void**)&my_output_device, size);
   cudaMemcpy(input_device, input_host, size, cudaMemcpyHostToDevice );
-  RunSwapDimension1And2InTensor3(input_device, input_dims, output_device);
-  MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device);
+
+#define BENCHMARK(X, REPEAT, NAME) \
+  do {\
+  float time; \
+  cudaEvent_t start, stop; \
+  cudaEventCreate(&start); \
+  cudaEventCreate(&stop); \
+  cudaEventRecord(start, 0); \
+  for (int repeat=0; repeat<REPEAT; repeat++)\
+  X;\
+  cudaEventRecord(stop, 0);\
+  cudaEventSynchronize(stop);\
+  cudaEventElapsedTime(&time, start, stop);\
+  printf(NAME":  %f ms \n", time/(float)REPEAT);} while(0)\
+
+  BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 1, "UNIFIED");
+  BENCHMARK(RunSwapDimension1And2InTensor3(input_device, input_dims, output_device), 100, "SEPARATE");
+
   cudaMemcpy(output_host, output_device, size, cudaMemcpyDeviceToHost);
   cudaMemcpy(my_output_host, my_output_device, size, cudaMemcpyDeviceToHost);
   cudaCheckError();
@@ -461,27 +498,12 @@ int main()
       for (int k=0; k<P; k++)
         check &= (output_host[i*M*P+j*P+k] == my_output_host[i*M*P+j*P+k]);
 
-  printf("check %d\n", check);
-
-
-  // for (int i=0; i<P; i++) {
-  //   for (int j=0; j<M; j++) {
-  //     std::cout.precision(5);
-  //     std::cout << std::setw(6)   << output_host[i*M+j];
-  //   }
-  //   printf("\n");
-  // }
-
-  printf("===============\n");
-
-  // for (int i=0; i<P; i++) {
-  //   for (int j=0; j<M; j++) {
-  //     std::cout.precision(5);
-  //     std::cout << std::setw(6)   << my_output_host[i*M+j];
-  //   }
-  //   printf("\n");
-  // }
-
-  return 0;
+  assert(check);
+  return check;
 }
 
+int main() {
+  test(128, 5, 1024);
+  test(128, 1024, 5);
+  return 0;
+}
