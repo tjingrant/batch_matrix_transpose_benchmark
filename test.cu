@@ -325,7 +325,7 @@ __global__ void MySwapDimension1And2InTensor3UsingTiles(const T* __restrict__ in
       TensorIndexToFlat(output_tile_origin, output_dims);
 
   // Oriented with respect to the output array.
-  int effective_thread_num = THREAD_NUM / TILE_SIZE_I * THREAD_NUM;
+  effective_thread_num = THREAD_NUM / TILE_SIZE_I * THREAD_NUM;
 
   if (x < effective_thread_num) {
     ti = x/TILE_SIZE_I;
@@ -410,32 +410,62 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
     int THREAD_NUM = 32;
     MySwapDimension1And2InTensor3UsingTiles<float, 256, 32, 32><<<
           my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
-  } else {
-    int TILE_SIZE_I = 0; int TILE_SIZE_J = 0;
-    bool i_big = input_dims[1] >= kMinDimensionToUseTiles;
 
-    if (i_big) {
-      TILE_SIZE_I = 512;
-      TILE_SIZE_J = input_dims[2];
-    } else {
-      TILE_SIZE_I = input_dims[1];
-      TILE_SIZE_J = 512;
-    }
-    int THREAD_NUM = 512;
+  } else {
+
+    int tile_size_i = input_dims[1] >= kMinDimensionToUseTiles ? 512 : input_dims[1];
+    int tile_size_j = input_dims[1] >= kMinDimensionToUseTiles ? input_dims[2] : 512;
+
+    int THREAD_NUM = 1024;
     Dimension<3> my_input_dims_in_tiles = {
-          input_dims[0], (input_dims[1] + TILE_SIZE_I - 1) / TILE_SIZE_I,
-          (input_dims[2] + TILE_SIZE_J - 1) / TILE_SIZE_J,
+          input_dims[0], (input_dims[1] + tile_size_i - 1) / tile_size_i,
+          (input_dims[2] + tile_size_j - 1) / tile_size_j,
     };
 
     int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
                               my_input_dims_in_tiles[2];
 
-    if (TILE_SIZE_I==512 && TILE_SIZE_J==5)
-      MySwapDimension1And2InTensor3UsingTiles<float, 512, 512, 5><<<
-            my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
-    if (TILE_SIZE_I==5 && TILE_SIZE_J==512)
-      MySwapDimension1And2InTensor3UsingTiles<float, 512, 5, 512><<<
-            my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+    #define LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(TILE_SIZE_I, TILE_SIZE_J) \
+      if (tile_size_i == TILE_SIZE_I && tile_size_j == TILE_SIZE_J) \
+        MySwapDimension1And2InTensor3UsingTiles<float, 1024, TILE_SIZE_I, TILE_SIZE_J><<< \
+              my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   1)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(1  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   2)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(2  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   3)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(3  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   4)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(4  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   5)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(5  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   6)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(6  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   7)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(7  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   8)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(8  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   9)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(9  , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  10)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(10 , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  11)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(11 , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  12)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(12 , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  13)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(13 , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  14)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(14 , 512)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  15)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(15 , 512)
+    // if (TILE_SIZE_I==512 && TILE_SIZE_J==5)
+    //   MySwapDimension1And2InTensor3UsingTiles<float, 512, 512, 5><<<
+    //         my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+    // if (TILE_SIZE_I==5 && TILE_SIZE_J==512)
+    //   MySwapDimension1And2InTensor3UsingTiles<float, 512, 5, 512><<<
+    //         my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
   }
 }
 
@@ -445,7 +475,7 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
  if(e!=cudaSuccess) {                                              \
    printf("Cuda failure %s:%d: '%s'\n",__FILE__,__LINE__,cudaGetErrorString(e));           \
    exit(0); \
- } else { printf("Cuda launch success\n"); }\
+ } else { }\
 }
 
 int test(int N, int M, int P)
@@ -483,11 +513,12 @@ int test(int N, int M, int P)
   cudaEventRecord(stop, 0);\
   cudaEventSynchronize(stop);\
   cudaEventElapsedTime(&time, start, stop);\
-  printf(NAME":  %f ms \n", time/(float)REPEAT);} while(0)\
+  printf(NAME":  %f ms \t", time/(float)REPEAT);} while(0)\
 
-  BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 1, "UNIFIED");
+  BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 100, "UNIFIED");
   BENCHMARK(RunSwapDimension1And2InTensor3(input_device, input_dims, output_device), 100, "SEPARATE");
 
+  printf("\n");
   cudaMemcpy(output_host, output_device, size, cudaMemcpyDeviceToHost);
   cudaMemcpy(my_output_host, my_output_device, size, cudaMemcpyDeviceToHost);
   cudaCheckError();
@@ -503,7 +534,9 @@ int test(int N, int M, int P)
 }
 
 int main() {
-  test(128, 5, 1024);
-  test(128, 1024, 5);
+  for (int i=2; i<16; i++) {
+    test(128, i, 1024);
+    test(128, 1024, i);
+  }
   return 0;
 }
