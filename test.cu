@@ -182,6 +182,7 @@ __global__ void SwapDimension1And2InTensor3UsingTiles(const T* input,
   MY_ASSERT(gridDim.y == 1);
   MY_ASSERT(gridDim.z == 1);
 
+
   // We break down the tile into NumSubTiles groups, so each thread processes
   // kSubTileSize elements (except at the edges of the input).
   const int kSubTileSize = TileSize / NumSubTiles;
@@ -254,28 +255,20 @@ __global__ void SwapDimension1And2InTensor3UsingTiles(const T* input,
   }
 }
 
-// #define THREAD_NUM 512
-// #define TILE_SIZE_I 3
-// #define TILE_SIZE_J 512
-#define PADDING 1
-
-// No bank-conflict transpose
-// Same as transposeCoalesced except the first tile dimension is padded
-// to avoid shared memory bank conflicts.
-// #define T float
-
-template <typename T, int THREAD_NUM, int TILE_SIZE_I, int TILE_SIZE_J>
+template <typename T, int THREAD_NUM>
 __global__ void MySwapDimension1And2InTensor3UsingTiles(const T* __restrict__ input,
                                         Dimension<3> input_dims,
-                                        T* __restrict__ output) {
+                                        T* __restrict__ output,
+                                        int TILE_SIZE_I,
+                                        int TILE_SIZE_J) {
 
-  #define READ_ROW_PER_PASS  (THREAD_NUM/TILE_SIZE_J)
-  #define WRITE_ROW_PER_PASS (THREAD_NUM/TILE_SIZE_I)
+  const int READ_ROW_PER_PASS = (THREAD_NUM/TILE_SIZE_J);
+  const int WRITE_ROW_PER_PASS = (THREAD_NUM/TILE_SIZE_I);
   // One extra line in the inner dimension to avoid share memory bank conflict.
-  __shared__ T shared_memory_tile[TILE_SIZE_I][TILE_SIZE_J+PADDING];
+  __shared__ T shared_memory_tile[];
 
   #define SHARED(i, j)\
-    shared_memory_tile[i][j]
+    shared_memory_tile[i*(TILE_SIZE_J+1)+j]
 
   int x = threadIdx.x;
 
@@ -303,11 +296,25 @@ __global__ void MySwapDimension1And2InTensor3UsingTiles(const T* __restrict__ in
       input[input_origin_flat_index +\
         (i) * input_dims[2] + (j)]
 
-  int ti = x/TILE_SIZE_J;
-  int tj = x%TILE_SIZE_J;
+  int tile_width = TILE_SIZE_J;
+  // Only the last row or column may not have the full size.
+  if (input_tile_index[2] == input_dims_in_tiles[2] - 1) {
+    tile_width = input_dims[2] - (input_dims_in_tiles[2] - 1) * TILE_SIZE_J;
+  }
+  int tile_height = TILE_SIZE_I;
+  if (input_tile_index[1] == input_dims_in_tiles[1] - 1) {
+    tile_height = input_dims[1] - (input_dims_in_tiles[1] - 1) * TILE_SIZE_I;
+  }
 
-  for (int i_loc = ti; i_loc < (TILE_SIZE_I); i_loc += READ_ROW_PER_PASS) {
-    SHARED(i_loc, tj) = INPUT(i_loc, tj);
+  int effective_thread_num = THREAD_NUM / TILE_SIZE_J * TILE_SIZE_J;
+
+  if (x < effective_thread_num) {
+    int ti = x/TILE_SIZE_J;
+    int tj = x%TILE_SIZE_J;
+    if (tj < tile_width)
+      for (int i_loc = ti; i_loc < (tile_height); i_loc += READ_ROW_PER_PASS) {
+        SHARED(i_loc, tj) = INPUT(i_loc, tj);
+      }
   }
 
   __syncthreads();
@@ -325,23 +332,21 @@ __global__ void MySwapDimension1And2InTensor3UsingTiles(const T* __restrict__ in
       TensorIndexToFlat(output_tile_origin, output_dims);
 
   // Oriented with respect to the output array.
-  effective_thread_num = THREAD_NUM / TILE_SIZE_I * THREAD_NUM;
+  effective_thread_num = THREAD_NUM / TILE_SIZE_I * TILE_SIZE_I;
 
   if (x < effective_thread_num) {
-    ti = x/TILE_SIZE_I;
-    tj = x%TILE_SIZE_I;
+    int ti = x/TILE_SIZE_I;
+    int tj = x%TILE_SIZE_I;
 
     #define OUTPUT(i, j)\
         output[output_origin_flat_index +\
           (i) * output_dims[2] + (j)]
-
-    for (int i_loc = ti; i_loc < (TILE_SIZE_J); i_loc += WRITE_ROW_PER_PASS) {
-      OUTPUT(i_loc, tj) = SHARED(tj, i_loc);
-    }
+    if (tj < tile_height)
+      for (int i_loc = ti; i_loc < (tile_width); i_loc += WRITE_ROW_PER_PASS) {
+        OUTPUT(i_loc, tj) = SHARED(tj, i_loc);
+      }
   }
-
 }
-#undef T
 
 // Launch the GPU kernel that would swap dimension-1 and dimension-2 in a
 // 3D tensor. It looks at the shape of the incoming data, and decides the best
@@ -364,19 +369,14 @@ void RunSwapDimension1And2InTensor3(const T* input,
 
   int total_tiles_count = input_dims_in_tiles[0] * input_dims_in_tiles[1] *
                             input_dims_in_tiles[2];
-
   if (use_tiles) {
     // We get best performance when TileSize is the number of threads in a warp
     // (32 on our GPUs) and NumSubTiles is 8, so our block size is 8 * 32 = 256
     // threads.
-    // std::cout << "Swapping using tiles. "  << input_dims_in_tiles[0] << "," <<
-                                                         // input_dims_in_tiles[1] << "," <<
-                                                         // input_dims_in_tiles[2] << std::endl;
     dim3 griddim(total_tiles_count, 1, 1);
     dim3 blockdim(TileSize, NumSubTiles, 1);
     SwapDimension1And2InTensor3UsingTiles<T, TileSize, NumSubTiles><<<griddim, blockdim>>>(input, input_dims, output);
   } else {
-    // std::cout << "Swapping using simple method." << std::endl;
     int total_element_count = input_dims[0] * input_dims[1] * input_dims[2];
     CudaLaunchConfig config = GetCudaLaunchConfig(total_element_count);
     SwapDimension1And2InTensor3Simple<T>
@@ -401,8 +401,8 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
 
   if (use_tiles) {
     Dimension<3> my_input_dims_in_tiles = {
-          input_dims[0], (input_dims[1] + 32 - 1) / 32,
-          (input_dims[2] + 32 - 1) / 32,
+          input_dims[0], (input_dims[1] + TileSize - 1) / TileSize,
+          (input_dims[2] + TileSize - 1) / TileSize,
     };
 
     int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
@@ -413,59 +413,53 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
 
   } else {
 
-    int tile_size_i = input_dims[1] >= kMinDimensionToUseTiles ? 512 : input_dims[1];
-    int tile_size_j = input_dims[1] >= kMinDimensionToUseTiles ? input_dims[2] : 512;
+    int tile_size_i = input_dims[1] >= kMinDimensionToUseTiles ? 128 : input_dims[1];
+    int tile_size_j = input_dims[1] >= kMinDimensionToUseTiles ? input_dims[2] : 128;
 
-    int THREAD_NUM = 1024;
+    int THREAD_NUM = 128;
     Dimension<3> my_input_dims_in_tiles = {
           input_dims[0], (input_dims[1] + tile_size_i - 1) / tile_size_i,
           (input_dims[2] + tile_size_j - 1) / tile_size_j,
     };
-
     int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
                               my_input_dims_in_tiles[2];
 
     #define LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(TILE_SIZE_I, TILE_SIZE_J) \
       if (tile_size_i == TILE_SIZE_I && tile_size_j == TILE_SIZE_J) \
-        MySwapDimension1And2InTensor3UsingTiles<float, 1024, TILE_SIZE_I, TILE_SIZE_J><<< \
+        MySwapDimension1And2InTensor3UsingTiles<float, 128, TILE_SIZE_I, TILE_SIZE_J><<< \
               my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
 
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   1)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(1  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   2)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(2  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   3)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(3  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   4)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(4  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   5)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(5  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   6)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(6  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   7)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(7  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   8)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(8  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,   9)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(9  , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  10)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(10 , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  11)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(11 , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  12)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(12 , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  13)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(13 , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  14)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(14 , 512)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(512,  15)
-    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(15 , 512)
-    // if (TILE_SIZE_I==512 && TILE_SIZE_J==5)
-    //   MySwapDimension1And2InTensor3UsingTiles<float, 512, 512, 5><<<
-    //         my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
-    // if (TILE_SIZE_I==5 && TILE_SIZE_J==512)
-    //   MySwapDimension1And2InTensor3UsingTiles<float, 512, 5, 512><<<
-    //         my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   1)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(1  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   2)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(2  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   3)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(3  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   4)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(4  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   5)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(5  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   6)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(6  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   7)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(7  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   8)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(8  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,   9)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(9  , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,  10)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(10 , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,  11)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(11 , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,  12)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(12 , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,  13)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(13 , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,  14)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(14 , 128)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(128,  15)
+    LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(15 , 128)
+
   }
 }
 
@@ -535,8 +529,8 @@ int test(int N, int M, int P)
 
 int main() {
   for (int i=2; i<16; i++) {
-    test(128, i, 1024);
-    test(128, 1024, i);
+    test(128, i, 784);
+    test(128, 784, i);
   }
   return 0;
 }
