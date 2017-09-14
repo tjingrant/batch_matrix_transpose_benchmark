@@ -422,9 +422,9 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
           my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
 
   } else if (long_matrix) {
-    int tile_sizes[] = {32, 128, 256, 512, 1024};
+    int tile_sizes[] = {64, 128, 256, 512, 1024};
     int tile_shorter_dim_limit[] = {15, 15, 10, 4, 2};
-    int long_tile_size = 32;
+    int long_tile_size = 64;
     float lowest_cost = std::numeric_limits<float>::max();
     int shorter_dim_limit = 15;
     for (int i=1; i<sizeof(tile_shorter_dim_limit)/sizeof(tile_shorter_dim_limit[0]); i++) {
@@ -459,7 +459,6 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
 
     int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
                               my_input_dims_in_tiles[2];
-
 
     #define LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, TILE_SIZE_I, TILE_SIZE_J) \
       if (tile_size_i <= TILE_SIZE_I && tile_size_j <= TILE_SIZE_J) { \
