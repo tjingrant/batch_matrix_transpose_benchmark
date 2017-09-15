@@ -589,17 +589,17 @@ int test(int N, int M, int P)
   cudaFree(my_output_device);
   cudaCheckError();
 
-  // bool check = 1;
-  // for (int i=0; i<N; i++)
-  //   for (int j=0; j<M; j++)
-  //     for (int k=0; k<P; k++)
-  //       check &= (output_host[i*M*P+j*P+k] == my_output_host[i*M*P+j*P+k]);
+  bool check = 1;
+  for (int i=0; i<N; i++)
+    for (int j=0; j<M; j++)
+      for (int k=0; k<P; k++)
+        check &= (output_host[i*M*P+j*P+k] == my_output_host[i*M*P+j*P+k]);
 
-  // assert(check);
+  assert(check);
   free(input_host);
   free(output_host);
   free(my_output_host);
-  // return check;
+  return check;
 }
 
 int main() {
