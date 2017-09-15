@@ -393,6 +393,8 @@ void RunSwapDimension1And2InTensor3(const T* input,
 }
 
 int debug = 0;
+#define TILE_SIZE 32
+#define THREAD_NUM 256
 // Launch the GPU kernel that would swap dimension-1 and dimension-2 in a
 // 3D tensor. It looks at the shape of the incoming data, and decides the best
 // strategy to launch.
@@ -403,37 +405,37 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
   // If both dimensions are not trivial, use tiles for the actual swapping.
   // Otherwise, the trivial swapping relying on the ldg cache is more efficient.
   static const int kMinDimensionToUseTiles = 16;
-  static const int TileSize = 32;
-  static const int NumSubTiles = 8;
+  static const int kMinDimensionToUseRectTiles = 96;
+
   bool large_matrix = (input_dims[1] >= kMinDimensionToUseTiles &&
                     input_dims[2] >= kMinDimensionToUseTiles);
-  bool long_matrix = (input_dims[1] >= 96 ||
-                    input_dims[2] >= 96);
+  bool long_matrix = (input_dims[1] >= kMinDimensionToUseRectTiles ||
+                    input_dims[2] >= kMinDimensionToUseRectTiles);
   if (large_matrix) {
     Dimension<3> my_input_dims_in_tiles = {
-          input_dims[0], (input_dims[1] + TileSize - 1) / TileSize,
-          (input_dims[2] + TileSize - 1) / TileSize,
+          input_dims[0], (input_dims[1] + TILE_SIZE - 1) / TILE_SIZE,
+          (input_dims[2] + TILE_SIZE - 1) / TILE_SIZE,
     };
 
     int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
                               my_input_dims_in_tiles[2];
-    int THREAD_NUM = 32;
-    MySwapDimension1And2InTensor3UsingTiles<float, 256, 32, 32><<<
+    MySwapDimension1And2InTensor3UsingTiles<float, THREAD_NUM, TILE_SIZE, TILE_SIZE><<<
           my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output);
 
   } else if (long_matrix) {
-    int tile_sizes[] = {64, 128, 256, 512, 1024};
-    int tile_shorter_dim_limit[] = {15, 15, 10, 4, 2};
-    int long_tile_size = 64;
+    int tile_sizes[] = {32, 64, 128, 256, 512, 1024};
+    int tile_shorter_dim_limit[] = {15, 15, 15, 10, 4, 2};
+    int long_tile_size = 0;
     float lowest_cost = std::numeric_limits<float>::max();
-    int shorter_dim_limit = 15;
-    for (int i=1; i<sizeof(tile_shorter_dim_limit)/sizeof(tile_shorter_dim_limit[0]); i++) {
+    int shorter_dim_limit = 0;
+
+    for (int i=0; i<sizeof(tile_shorter_dim_limit)/sizeof(tile_shorter_dim_limit[0]); i++) {
       float wasted_portion = (float)(input_dims[1] - input_dims[1]/tile_sizes[i] * tile_sizes[i]);
       float num_full_tiles = max(input_dims[1], input_dims[2])/tile_sizes[i];
       float cost = 0;
       if (num_full_tiles <= 1)
         cost = wasted_portion;
-      if ((cost <= lowest_cost) && ((input_dims[1] >= tile_sizes[i] || input_dims[2] >= tile_sizes[i])) ) {
+      if ((cost <= lowest_cost)) {
         long_tile_size = tile_sizes[i];
         shorter_dim_limit = tile_shorter_dim_limit[i];
         lowest_cost = cost;
@@ -507,8 +509,9 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
       LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 15 , LONG_SIDE)
 
     #define LAUNCH_021() \
+      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(128, 32) \
       LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(128, 64) \
-      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(128, 128) \
+      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(256, 128) \
       LAUNCH_021_THREAD_NUM_LONG_SIDE_MEDIUM(256, 256) \
       LAUNCH_021_THREAD_NUM_LONG_SIDE_SMALL(512, 512) \
       LAUNCH_021_THREAD_NUM_LONG_SIDE_XSMALL(1024, 1024)
@@ -601,8 +604,9 @@ int test(int N, int M, int P)
 
 int main() {
   for (int k=32; k<=1024; k*=2) {
-    for (int j=16; j<2048; j+=32) {
-      for (int i=2; i<8; i++) {
+    for (int j=96; j<2048; j+=16) {
+      printf("(%d, %d)\t", k, j);
+      for (int i=2; i<16; i++) {
         test(k, i, j);
         test(k, j, i);
       }
