@@ -576,8 +576,8 @@ int test(int N, int M, int P)
   cudaEventElapsedTime(&time, start, stop);\
   time_record[I] = time/(float)REPEAT;} while(0)
 
-  BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 1, "UNIFIED", 0);
-  BENCHMARK(RunSwapDimension1And2InTensor3(input_device, input_dims, output_device), 1, "SEPARATE", 1);
+  BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 50, "UNIFIED", 0);
+  BENCHMARK(RunSwapDimension1And2InTensor3(input_device, input_dims, output_device), 50, "SEPARATE", 1);
 
   printf("%f\t", (time_record[1]-time_record[0])/time_record[1]);
   if (debug)
