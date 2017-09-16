@@ -1,12 +1,12 @@
 # Batch Matrix Transpose Benchmark
 
 This benchmark evaluates the performance of batch matrix transposition in Tensorflow. 
-This benchmark includes a hard coded version of util.h that calculates optimal kernel launch configurations that needs to be modified for different architecture.
+This benchmark includes a hard coded version of util.h that calculates optimal kernel launching configurations that needs to be modified for different architecture.
 The paramters we modified for each architecture tested are:
 
-| Arch | max thread num | number of SMs | Reference  |
-|------|----------------|---------------|------------|
-| K40  | 1024           | 15            |            |
+| Arch | max thread num | number of SMs | Reference               |
+|------|----------------|---------------|-------------------------|
+| K40  | 1024           | 15            | [reference1](https://www.microway.com/hpc-tech-tips/nvidia-tesla-k40-atlas-gpu-accelerator-kepler-gk110b-up-close/) [reference2](http://gpu.cs.uct.ac.za/Slides/Kepler2.pdf)         |
 | P100 | 1024           | 56            | [reference](https://images.nvidia.com/content/pdf/tesla/whitepaper/pascal-architecture-whitepaper.pdf) |
 
 # Experimental Setup and Results
