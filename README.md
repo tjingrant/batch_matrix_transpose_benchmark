@@ -19,6 +19,8 @@ matrix_height = range(96, 2048, 16)
 matrix_width  = range(2, 16)
 ```
 
+Note that switching matrix\_height and matrix\_width usually does not change performance results as the launch configuration does not differ from the case where these two are unswitched . Thus we can justifiably cut our exploratory space in half.
+
 Based on the data we have collected, our implementation shows 12% average speedup on K40 machine whilst demonstrating a 39% speedup on the P100 machine. Results in the spreadsheet are color-coded as such:
 
 Red (Loss):    where our implementation is 10% or more slower than baseline.
