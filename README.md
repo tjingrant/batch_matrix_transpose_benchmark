@@ -29,7 +29,7 @@ Yellow (Win): where our implementation is 10% or more faster than baseline.
 
 Uncolored (On Par): where our implementation is less than 10% slower/faster than baseline.
 
-# To evaluate
+# To Evaluate
 To compile:
 Modify Makefile to make sure that you are using the latest compute capability, we used 3.5 for K40 and 6.0 for P100.
 
