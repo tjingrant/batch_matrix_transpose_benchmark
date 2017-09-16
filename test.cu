@@ -3,6 +3,7 @@
 #include <cassert>
 #include <iostream>
 #include <iomanip>
+#include <cstdlib>
 
 #include "util.h"
 
@@ -428,13 +429,14 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
     int long_tile_size = 0;
     float lowest_cost = std::numeric_limits<float>::max();
     int shorter_dim_limit = 0;
-
+    int long_side = max(input_dims[1], input_dims[2]);
     for (int i=0; i<sizeof(tile_shorter_dim_limit)/sizeof(tile_shorter_dim_limit[0]); i++) {
-      float wasted_portion = (float)(input_dims[1] - input_dims[1]/tile_sizes[i] * tile_sizes[i]);
+      float wasted_portion = (float)(long_side - long_side/tile_sizes[i] * tile_sizes[i]);
       float num_full_tiles = max(input_dims[1], input_dims[2])/tile_sizes[i];
       float cost = 0;
       if (num_full_tiles <= 1)
         cost = wasted_portion;
+      // printf("cost of size %d, %f\n", tile_sizes[i], cost);
       if ((cost <= lowest_cost)) {
         long_tile_size = tile_sizes[i];
         shorter_dim_limit = tile_shorter_dim_limit[i];
@@ -464,6 +466,7 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
 
     #define LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, TILE_SIZE_I, TILE_SIZE_J) \
       if (tile_size_i <= TILE_SIZE_I && tile_size_j <= TILE_SIZE_J) { \
+        if (0) printf("%d, %d, %d\n", THREAD_NUM, TILE_SIZE_I, TILE_SIZE_J); \
         MySwapDimension1And2InTensor3UsingTiles<T, THREAD_NUM, TILE_SIZE_I, TILE_SIZE_J><<< \
               my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output); \
         return; }
@@ -509,9 +512,9 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
       LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 15 , LONG_SIDE)
 
     #define LAUNCH_021() \
-      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(128, 32) \
-      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(128, 64) \
-      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(256, 128) \
+      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(32, 32) \
+      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(64, 64) \
+      LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(128, 128) \
       LAUNCH_021_THREAD_NUM_LONG_SIDE_MEDIUM(256, 256) \
       LAUNCH_021_THREAD_NUM_LONG_SIDE_SMALL(512, 512) \
       LAUNCH_021_THREAD_NUM_LONG_SIDE_XSMALL(1024, 1024)
@@ -537,6 +540,35 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
  } else { }\
 }
 
+class EventTimer {
+public:
+  EventTimer() : mStarted(false), mStopped(false) {
+    cudaEventCreate(&mStart);
+    cudaEventCreate(&mStop);
+  }
+  ~EventTimer() {
+    cudaEventDestroy(mStart);
+    cudaEventDestroy(mStop);
+  }
+  void start(cudaStream_t s = 0) { cudaEventRecord(mStart, s);
+                                   mStarted = true; mStopped = false; }
+  void stop(cudaStream_t s = 0)  { assert(mStarted);
+                                   cudaEventRecord(mStop, s);
+                                   mStarted = false; mStopped = true; }
+  float elapsed() {
+    assert(mStopped);
+    if (!mStopped) return 0;
+    cudaEventSynchronize(mStop);
+    float elapsed = 0;
+    cudaEventElapsedTime(&elapsed, mStart, mStop);
+    return elapsed;
+  }
+
+private:
+  bool mStarted, mStopped;
+  cudaEvent_t mStart, mStop;
+};
+
 int test(int N, int M, int P)
 {
   if (debug )
@@ -561,25 +593,24 @@ int test(int N, int M, int P)
   cudaMalloc((void**)&my_output_device, size);
   cudaMemcpy(input_device, input_host, size, cudaMemcpyHostToDevice );
   float time_record[2];
+  EventTimer et;
+
 
 #define BENCHMARK(X, REPEAT, NAME, I) \
-  do {\
-  float time; \
-  cudaEvent_t start, stop; \
-  cudaEventCreate(&start); \
-  cudaEventCreate(&stop); \
-  cudaEventRecord(start, 0); \
   for (int repeat=0; repeat<REPEAT; repeat++)\
-  X;\
-  cudaEventRecord(stop, 0);\
-  cudaEventSynchronize(stop);\
-  cudaEventElapsedTime(&time, start, stop);\
-  time_record[I] = time/(float)REPEAT;} while(0)
+  X;
+//   do {\
+//   et.start();\
+//   for (int repeat=0; repeat<REPEAT; repeat++)\
+//   X;\
+//   et.stop();\
+//   time_record[I] = et.elapsed()/(float)REPEAT;\
+//   } while(0)
 
-  BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 50, "UNIFIED", 0);
-  BENCHMARK(RunSwapDimension1And2InTensor3(input_device, input_dims, output_device), 50, "SEPARATE", 1);
+  BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 10, "UNIFIED", 0);
+  BENCHMARK(RunSwapDimension1And2InTensor3(input_device, input_dims, output_device), 10, "SEPARATE", 1);
 
-  printf("%f\t", (time_record[1]-time_record[0])/time_record[1]);
+  //printf("%f, %f, %f\t", time_record[0], time_record[1], (time_record[1]-time_record[0])/time_record[1]);
   if (debug)
     printf("\n");
   cudaMemcpy(output_host, output_device, size, cudaMemcpyDeviceToHost);
@@ -602,17 +633,21 @@ int test(int N, int M, int P)
   return check;
 }
 
-int main() {
-  for (int k=32; k<=1024; k*=2) {
-    for (int j=96; j<2048; j+=16) {
-      printf("(%d, %d)\t", k, j);
-      for (int i=2; i<16; i++) {
-        test(k, i, j);
-        test(k, j, i);
-      }
-      printf("\n");
-    }
-  }
-  //test(512, 11, 272);
+int main(int argc, char *argv[]) {
+  int k = atoi(argv[1]);
+  int j = atoi(argv[2]);
+  int i = atoi(argv[3]);
+
+  // for (int k=32; k<=1024; k*=2) {
+  //   for (int j=96; j<2048; j+=16) {
+  //     printf("(%d, %d)\t", k, j);
+  //     for (int i=2; i<16; i++) {
+  //       test(k, i, j);
+  //       test(k, j, i);
+  //     }
+  //     printf("\n");
+  //   }
+  // }
+  test(k, j, i);
   return 0;
 }
