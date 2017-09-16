@@ -455,7 +455,6 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
 
     if (debug)
      printf("tile size: %d, %d\n", tile_size_i, tile_size_j);
-    //int THREAD_NUM = 128;
     Dimension<3> my_input_dims_in_tiles = {
           input_dims[0], (input_dims[1] + tile_size_i - 1) / tile_size_i,
           (input_dims[2] + tile_size_j - 1) / tile_size_j,
@@ -531,44 +530,6 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
   }
 }
 
-//Macro for checking cuda errors following a cuda launch or api call
-#define cudaCheckError() {                                          \
- cudaError_t e=cudaGetLastError();                                 \
- if(e!=cudaSuccess) {                                              \
-   printf("Cuda failure %s:%d: '%s'\n",__FILE__,__LINE__,cudaGetErrorString(e));           \
-   exit(0); \
- } else { }\
-}
-
-class EventTimer {
-public:
-  EventTimer() : mStarted(false), mStopped(false) {
-    cudaEventCreate(&mStart);
-    cudaEventCreate(&mStop);
-  }
-  ~EventTimer() {
-    cudaEventDestroy(mStart);
-    cudaEventDestroy(mStop);
-  }
-  void start(cudaStream_t s = 0) { cudaEventRecord(mStart, s);
-                                   mStarted = true; mStopped = false; }
-  void stop(cudaStream_t s = 0)  { assert(mStarted);
-                                   cudaEventRecord(mStop, s);
-                                   mStarted = false; mStopped = true; }
-  float elapsed() {
-    assert(mStopped);
-    if (!mStopped) return 0;
-    cudaEventSynchronize(mStop);
-    float elapsed = 0;
-    cudaEventElapsedTime(&elapsed, mStart, mStop);
-    return elapsed;
-  }
-
-private:
-  bool mStarted, mStopped;
-  cudaEvent_t mStart, mStop;
-};
-
 int test(int N, int M, int P)
 {
   if (debug )
@@ -599,13 +560,6 @@ int test(int N, int M, int P)
 #define BENCHMARK(X, REPEAT, NAME, I) \
   for (int repeat=0; repeat<REPEAT; repeat++)\
   X;
-//   do {\
-//   et.start();\
-//   for (int repeat=0; repeat<REPEAT; repeat++)\
-//   X;\
-//   et.stop();\
-//   time_record[I] = et.elapsed()/(float)REPEAT;\
-//   } while(0)
 
   BENCHMARK(MyRunSwapDimension1And2InTensor3(input_device, input_dims, my_output_device), 10, "UNIFIED", 0);
   BENCHMARK(RunSwapDimension1And2InTensor3(input_device, input_dims, output_device), 10, "SEPARATE", 1);
