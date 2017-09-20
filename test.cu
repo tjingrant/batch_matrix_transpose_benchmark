@@ -394,83 +394,74 @@ void RunSwapDimension1And2InTensor3(const T* input,
   }
 }
 
-#define max(a, b) ((a)>(b)?(a):(b))
-#define min(a, b) ((a)<(b)?(a):(b))
-template <typename T, int TileLongSide, int TileShortSide, bool LongSideFirst>
+template <typename T, int TileLongSide, int TileShortSide>
 struct BatchMatrixTransposeDispatcher {
 static void DoBatchMatrixTranspose(int tile_size_i, int tile_size_j, int my_total_tiles_count, const T* input, const Dimension<3>& input_dims, T* my_output) {
-  // This makes things easier for the compiler.
-  // if (TileSizeI > 64 || TileSizeI > 2 || TileSizeJ > 64 || TileSizeJ > 2)
-  //   return;
 
-  int long_side = max(tile_size_i, tile_size_j);
-  int short_side = min(tile_size_i, tile_size_j);
+  bool request_satisfied = (max(tile_size_i, tile_size_j) <= TileLongSide) && (min(tile_size_i, tile_size_j) <= TileShortSide);
 
-  std::map<int, int> tile_spec = {{32, 15}, {64, 15}, {128, 15}, {256, 10}, {512, 4}, {1024, 2}};
-  bool request_satisfied = tile_size_i <= TileSizeI && tile_size_j <= TileSizeJ;
-
-  // If the long side request is fulfilled and the short side request exceeds the allowed limit,
-  // we override the request.
-  bool short_side_too_long = false;
-  short_side_too_long |= (long_side == 32   && short_side >=15);
-  short_side_too_long |= (long_side == 64   && short_side >=15);
-  short_side_too_long |= (long_side == 128  && short_side >=15);
-  short_side_too_long |= (long_side == 256  && short_side >=10);
-  short_side_too_long |= (long_side == 512  && short_side >=4 );
-  short_side_too_long |= (long_side == 1024 && short_side >=2 );
-
-  bool request_overriden = max(tile_size_i, tile_size_j) >= max(TileSizeI, TileSizeJ) && short_side_too_long;
-
-  if (request_satisfied || request_overriden) {
-    const int ThreadNum = max(TileSizeI, TileSizeJ);
-    MySwapDimension1And2InTensor3UsingTiles<T, 1024, TileSizeI, TileSizeJ><<<
-      my_total_tiles_count, ThreadNum>>>(input, input_dims, my_output);
+  if (request_satisfied) {
+    const int ThreadNum = TileLongSide;
+    if (tile_size_i <= TileLongSide && tile_size_j <= TileShortSide)
+      MySwapDimension1And2InTensor3UsingTiles<T, ThreadNum, TileLongSide, TileShortSide><<<
+        my_total_tiles_count, ThreadNum>>>(input, input_dims, my_output);
+    else if (tile_size_j <= TileLongSide && tile_size_i <= TileShortSide)
+      MySwapDimension1And2InTensor3UsingTiles<T, ThreadNum, TileShortSide, TileLongSide><<<
+        my_total_tiles_count, ThreadNum>>>(input, input_dims, my_output);
     return;
   }
 
   // Kernel is not launched, meaning the launch configuration is not satisfied.
-  const bool i_is_the_long_side = TileSizeI >= TileSizeJ;
-  const bool long_side_request_not_satisfied = max(tile_size_i, tile_size_j) > max(TileSizeI, TileSizeJ);
+  const bool long_side_request_not_satisfied = max(tile_size_i, tile_size_j) > TileLongSide;
 
   if (long_side_request_not_satisfied) {
-    // If long side request is not fulfilled, try double the long side length.
-    const int next_long_side_to_try = max(TileSizeI, TileSizeJ) * 2;
-    const int next_short_side_to_try = min(TileSizeI, TileSizeJ);
-
-    const int NextTileSizeI = i_is_the_long_side ? next_long_side_to_try : next_short_side_to_try;
-    const int NextTileSizeJ = i_is_the_long_side ? next_short_side_to_try : next_long_side_to_try;
-
-    BatchMatrixTransposeDispatcher<T, NextTileSizeI, NextTileSizeJ>::DoBatchMatrixTranspose(tile_size_i, tile_size_j, my_total_tiles_count, input, input_dims, my_output);
-
-  // } else {
-  //   // On the contrary, if short side request is not fulfilled, try incrementing the short side length.
-  //   const int next_long_side_to_try = max(TileSizeI, TileSizeJ);
-  //   const int next_short_side_to_try = min(TileSizeI, TileSizeJ) + 1;
-
-  //   const int NextTileSizeI = i_is_the_long_side ? next_long_side_to_try : next_short_side_to_try;
-  //   const int NextTileSizeJ = i_is_the_long_side ? next_short_side_to_try : next_long_side_to_try;
-
-  //   BatchMatrixTransposeDispatcher<T, NextTileSizeI, NextTileSizeJ>::DoBatchMatrixTranspose(tile_size_i, tile_size_j, my_total_tiles_count, input, input_dims, my_output);
-
+    // printf("%d %d\n", TileLongSide, TileShortSide);
+    BatchMatrixTransposeDispatcher<T, TileLongSide * 2, TileShortSide>::DoBatchMatrixTranspose(tile_size_i, tile_size_j, my_total_tiles_count, input, input_dims, my_output);
+  } else {
+    // printf("%d %d\n", TileLongSide, TileShortSide);
+    BatchMatrixTransposeDispatcher<T, TileLongSide, TileShortSide + 1>::DoBatchMatrixTranspose(tile_size_i, tile_size_j, my_total_tiles_count, input, input_dims, my_output);
   }
 }
 };
-#undef max
-#undef min
 
-template<typename T, int TileSizeJ>  // explicit specialization for T = void
-struct BatchMatrixTransposeDispatcher<T, 128, TileSizeJ>
+template<typename T, int TileSizeI>
+struct BatchMatrixTransposeDispatcher<T, TileSizeI, 16>
 {
 static void DoBatchMatrixTranspose(int tile_size_i, int tile_size_j, int my_total_tiles_count, const T* input, const Dimension<3>& input_dims, T* my_output) {
+  assert(false && "BatchMatrixTransposeDispatcher has requested an unexpected launch configuration. ");
 }
 };
 
-template<typename T, int TileSizeI>  // explicit specialization for T = void
-struct BatchMatrixTransposeDispatcher<T, TileSizeI, 128>
+template<typename T, int TileSizeJ>
+struct BatchMatrixTransposeDispatcher<T, 1024, TileSizeJ>
 {
 static void DoBatchMatrixTranspose(int tile_size_i, int tile_size_j, int my_total_tiles_count, const T* input, const Dimension<3>& input_dims, T* my_output) {
+  assert(false && "BatchMatrixTransposeDispatcher has requested an unexpected launch configuration. ");
 }
 };
+
+#define BATCH_MATRIX_TRANSPOSE_LIMIT(LONG_SIDE, SHORT_SIDE) \
+template<typename T>\
+struct BatchMatrixTransposeDispatcher<T, LONG_SIDE, SHORT_SIDE>\
+{\
+  static void DoBatchMatrixTranspose(int tile_size_i, int tile_size_j, int my_total_tiles_count, const T* input, const Dimension<3>& input_dims, T* my_output) {\
+  const int ThreadNum = LONG_SIDE;\
+  if (tile_size_i <= LONG_SIDE && tile_size_j <= SHORT_SIDE)\
+    MySwapDimension1And2InTensor3UsingTiles<T, ThreadNum, LONG_SIDE, SHORT_SIDE><<<\
+      my_total_tiles_count, ThreadNum>>>(input, input_dims, my_output);\
+  else if (tile_size_j <= LONG_SIDE && tile_size_i <= SHORT_SIDE)\
+    MySwapDimension1And2InTensor3UsingTiles<T, ThreadNum, SHORT_SIDE, LONG_SIDE><<<\
+      my_total_tiles_count, ThreadNum>>>(input, input_dims, my_output);\
+  return;\
+}\
+};
+
+BATCH_MATRIX_TRANSPOSE_LIMIT(32  , 15);
+BATCH_MATRIX_TRANSPOSE_LIMIT(64  , 15);
+BATCH_MATRIX_TRANSPOSE_LIMIT(128 , 15);
+BATCH_MATRIX_TRANSPOSE_LIMIT(256 , 15);
+BATCH_MATRIX_TRANSPOSE_LIMIT(512 , 11);
+BATCH_MATRIX_TRANSPOSE_LIMIT(1024, 2 );
 
 int debug = 0;
 // Launch the GPU kernel that would swap dimension-1 and dimension-2 in a
@@ -504,7 +495,7 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
           my_total_tiles_count, ThreadNum>>>(input, input_dims, my_output);
 
   } else if (long_matrix) {
-    std::map<int, int> tile_spec = {{32, 15}, {64, 15}, {128, 15}, {256, 10}, {512, 4}, {1024, 2}};
+    std::map<int, int> tile_spec = {{32, 15}, {64, 15}, {128, 15}, {256, 15}, {512, 11}, {1024, 2}};
     int tile_long_side_len = 0;
     int tile_short_side_len = 0;
     float lowest_cost = std::numeric_limits<float>::max();
@@ -537,9 +528,6 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
     requested_tile_size_j = requested_tile_size_j == tile_long_side_len ?
                   tile_long_side_len : min(requested_tile_size_j, tile_short_side_len);
 
-    if (debug)
-     printf("tile size requested: %d, %d\n", requested_tile_size_i, requested_tile_size_j);
-
     Dimension<3> my_input_dims_in_tiles = {
           input_dims[0], (input_dims[1] + requested_tile_size_i - 1) / requested_tile_size_i,
           (input_dims[2] + requested_tile_size_j - 1) / requested_tile_size_j,
@@ -548,63 +536,7 @@ void MyRunSwapDimension1And2InTensor3(const T* input,
     int my_total_tiles_count = my_input_dims_in_tiles[0] * my_input_dims_in_tiles[1] *
                               my_input_dims_in_tiles[2];
 
-    BatchMatrixTransposeDispatcher<float, 32, 2>::DoBatchMatrixTranspose(requested_tile_size_j, requested_tile_size_j, my_total_tiles_count, input, input_dims, my_output);
-    // #define LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, TILE_SIZE_I, TILE_SIZE_J) \
-    //   if (requested_tile_size_i <= TILE_SIZE_I && requested_tile_size_j <= TILE_SIZE_J) { \
-    //     if (0) printf("%d, %d, %d\n", THREAD_NUM, TILE_SIZE_I, TILE_SIZE_J); \
-    //     MySwapDimension1And2InTensor3UsingTiles<T, THREAD_NUM, TILE_SIZE_I, TILE_SIZE_J><<< \
-    //           my_total_tiles_count, THREAD_NUM>>>(input, input_dims, my_output); \
-    //     return; }
-
-    // #define LAUNCH_021_THREAD_NUM_LONG_SIDE_XSMALL(THREAD_NUM, LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   2)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 2  , LONG_SIDE)
-
-    // #define LAUNCH_021_THREAD_NUM_LONG_SIDE_SMALL(THREAD_NUM, LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   2)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 2  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   4)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 4  , LONG_SIDE)\
-
-    // #define LAUNCH_021_THREAD_NUM_LONG_SIDE_MEDIUM(THREAD_NUM, LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   2)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 2  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   4)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 4  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   6)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 6  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   8)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 8  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,  10)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 10 , LONG_SIDE)
-
-    // #define LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(THREAD_NUM, LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   2)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 2  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   4)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 4  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   6)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 6  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,   8)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 8  , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,  10)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 10 , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,  12)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 12 , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,  14)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 14 , LONG_SIDE)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, LONG_SIDE,  15)\
-    //   LAUNCH_MY_SWAP_DIMENSION_1_AND_2_IN_TENSOR_3_USING_TILES(THREAD_NUM, 15 , LONG_SIDE)
-
-    // #define LAUNCH_021() \
-    //   LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(32, 32) \
-    //   LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(64, 64) \
-    //   LAUNCH_021_THREAD_NUM_LONG_SIDE_LARGE(128, 128) \
-    //   LAUNCH_021_THREAD_NUM_LONG_SIDE_MEDIUM(256, 256) \
-    //   LAUNCH_021_THREAD_NUM_LONG_SIDE_SMALL(512, 512) \
-    //   LAUNCH_021_THREAD_NUM_LONG_SIDE_XSMALL(1024, 1024)
-
-    // LAUNCH_021()
+    BatchMatrixTransposeDispatcher<float, 32, 2>::DoBatchMatrixTranspose(requested_tile_size_i, requested_tile_size_j, my_total_tiles_count, input, input_dims, my_output);
 
   } else {
 
